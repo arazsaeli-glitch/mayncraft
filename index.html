@@ -117,6 +117,18 @@ body.playing #btn-settings{display:flex}
 #mp-close-btn{padding:10px 22px;background:rgba(180,80,80,.6);border:1px solid #cc6666;border-radius:6px;color:#fff;cursor:pointer;font-family:inherit;margin-top:8px}
 #online-badge{position:fixed;top:calc(8px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:rgba(80,180,100,.9);color:#fff;padding:6px 16px;border-radius:20px;font-size:12px;z-index:6;pointer-events:none;display:none;box-shadow:0 2px 8px rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.3)}
 #online-badge.show{display:block}
+#mp-code-overlay{position:fixed;inset:0;background:rgba(8,16,26,.92);z-index:36;display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff;gap:14px;padding:20px;text-align:center}
+#mp-code-overlay.open{display:flex}
+#mp-code-overlay h2{font-size:20px;letter-spacing:1px}
+#mp-code-overlay p{color:#8aa;font-size:13px;line-height:1.8;max-width:320px}
+.mp-code-btn{padding:14px 30px;font-size:15px;font-family:inherit;font-weight:bold;border:2px solid rgba(255,255,255,.3);border-radius:8px;color:#fff;cursor:pointer;background:rgba(80,120,180,.5);min-width:260px}
+.mp-code-btn:hover{border-color:#fff}
+.mp-code-divider{color:#678;font-size:12px;margin:2px 0}
+#mp-code-input{padding:12px;font-size:20px;letter-spacing:5px;text-align:center;text-transform:uppercase;border-radius:8px;border:2px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;width:180px;font-family:monospace}
+#mp-code-input::placeholder{color:#678;letter-spacing:normal;font-size:11px}
+#mp-code-cancel{margin-top:6px;background:transparent;border:none;color:#8aa;text-decoration:underline;cursor:pointer;font-family:inherit;font-size:13px}
+#mp-room-banner{position:fixed;top:calc(56px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:rgba(255,200,0,.95);color:#000;font-weight:bold;padding:8px 18px;border-radius:20px;font-size:14px;z-index:7;display:none;letter-spacing:3px;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none}
+#mp-room-banner.show{display:block}
 </style>
 </head>
 <body>
@@ -131,8 +143,18 @@ body.playing #btn-settings{display:flex}
 <div class="menu-info">
 <b>⚔️ بقا:</b> بدون آیتم، قلب، بدون پرواز، دشمنان خطرناک<br>
 <b>🎨 خلاقیت:</b> تمام آیتم‌ها، پرواز، دشمنان بی‌خطر<br>
-<b>🌐 آنلاین:</b> اولین نفر میزبان می‌شود، بقیه مستقیم وارد دنیای میزبان می‌شوند
+<b>🌐 آنلاین:</b> یک اتاق با کد بساز و کد را برای دوستت بفرست، یا کد دوستت را وارد کن
 </div>
+</div>
+<div id="mp-room-banner"></div>
+<div id="mp-code-overlay">
+<h2>🌐 بازی آنلاین با دوستان</h2>
+<p>یک اتاق جدید بساز و کدش رو برای دوستت بفرست، یا کدی که دوستت بهت داده رو وارد کن تا دقیقاً وارد همون دنیا بشی.</p>
+<button class="mp-code-btn" id="mp-create-room">🆕 ساخت اتاق جدید</button>
+<div class="mp-code-divider">— یا —</div>
+<input id="mp-code-input" placeholder="کد اتاق دوستت را وارد کن" maxlength="6">
+<button class="mp-code-btn" id="mp-join-room">🔑 ورود با کد</button>
+<button id="mp-code-cancel">انصراف</button>
 </div>
 <div id="damage-overlay"></div>
 <div id="heal-overlay"></div>
@@ -219,6 +241,29 @@ let modifiedBlocks = new Map();
 
 // ═══ شبکه ═══
 const PUBLIC_ROOM_ID = 'mc-clone-public-lobby-v5';
+// سرورهای STUN/TURN اضافی: بدون TURN، خیلی از موبایل‌ها و شبکه‌های اپراتوری
+// (که پشت NAT محدودکننده هستند) اصلاً نمی‌توانند مستقیم به هم وصل شوند؛
+// همین موضوع رایج‌ترین دلیل «سخت بودن اتصال آنلاین» است.
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+  ]
+};
+// کد اتاق فعلی. به‌جای یک لابی سراسری مشترک (که باعث می‌شد هر بازیکن آنلاینِ
+// دنیا با هر کس دیگری که هم‌زمان دکمه آنلاین را زده قاطی شود)، هر گروه از
+// دوستان با یک کد اختصاصی وارد اتاق خودشان می‌شوند.
+let onlineRoomCode = null;
+function roomPeerId(code){ return 'mcclone-room-' + String(code).toUpperCase().replace(/[^A-Z0-9]/g,''); }
+function genRoomCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // بدون حروف/ارقام شبیه هم
+  let s = '';
+  for(let i=0;i<4;i++) s += chars[Math.floor(Math.random()*chars.length)];
+  return s;
+}
 const connections = [];        // DataConnection[]
 const remotePlayers = new Map(); // id -> RemotePlayer
 let peer = null;
@@ -1900,10 +1945,10 @@ function update(dt){
   const netIcon = onlineCount > 0 ? ` 🌐×${onlineCount}` : '';
   infoEl.innerHTML=`${modeIcon}${netIcon} 📍 ${bx} ${by} ${bz} ${timeIcon} ${mm}:${ss.toString().padStart(2,'0')}<br>🎯 ${name} (${getInventoryCount(held?held.id:0)})<br>❤ ${player.health} | ${player.fly?'✈ on':'✈ off'} | FPS: ${fps} | Mobs: ${mobs.length}`;
   if(onlineCount > 0){
-    onlineBadge.textContent = (isHost?'👑 میزبان':'🎮 بازیکن') + ` • ${onlineCount} نفر متصل`;
+    onlineBadge.textContent = (isHost?'👑 میزبان':'🎮 بازیکن') + ` • ${onlineCount} نفر متصل` + (onlineRoomCode?` • اتاق ${onlineRoomCode}`:'');
     onlineBadge.classList.add('show');
   } else if(isHost && peer && !peer.destroyed){
-    onlineBadge.textContent = '👑 میزبان — منتظر بازیکن...';
+    onlineBadge.textContent = '👑 میزبان — منتظر بازیکن... ' + (onlineRoomCode?`(اتاق ${onlineRoomCode})`:'');
     onlineBadge.classList.add('show');
   } else {
     onlineBadge.classList.remove('show');
@@ -2530,13 +2575,17 @@ function hideMpOverlay(){ mpOverlay.classList.remove('open'); }
 
 document.getElementById('mp-close-btn').addEventListener('click', () => {
   hideMpOverlay();
+  if(onlineRetryTimer){ clearTimeout(onlineRetryTimer); onlineRetryTimer=null; }
+  if(onlineWatchdog){ clearTimeout(onlineWatchdog); onlineWatchdog=null; }
   if(peer && !peer.destroyed){ try{ peer.destroy(); }catch(e){} }
   peer = null;
   isHost = false;
+  onlineRoomCode = null;
   connections.length = 0;
   for(const [id, rp] of remotePlayers){ rp.remove(); }
   remotePlayers.clear();
   networkReady = false;
+  hideRoomBanner();
 });
 
 function broadcast(msg, exclude){
@@ -2614,6 +2663,8 @@ function attachGuestConnection(c){
     for(const [id, rp] of remotePlayers){ rp.remove(); }
     remotePlayers.clear();
     notify('🔌 ارتباط با میزبان قطع شد');
+    onlineRoomCode = null;
+    hideRoomBanner();
     showMenu();
   });
 
@@ -2818,17 +2869,24 @@ function armOnlineWatchdog(){
   }, 12000);
 }
 
-function startOnlineGame(isRetry=false){
-  if(!isRetry) onlineAttempt=0;
-  showMpOverlay('🌐 در حال ورود به بازی آنلاین...', 'لطفاً چند لحظه صبر کن؛ اتصال خودکار انجام می‌شود');
+function startOnlineGame(isRetry=false, code=null){
+  if(!isRetry){
+    onlineAttempt=0;
+    if(code) onlineRoomCode = code;
+  }
+  if(!onlineRoomCode) onlineRoomCode = genRoomCode();
+  const roomId = roomPeerId(onlineRoomCode);
+
+  showMpOverlay('🌐 در حال ساخت اتاق ' + onlineRoomCode + '...', 'لطفاً چند لحظه صبر کن؛ اتصال خودکار انجام می‌شود');
   isHost = false;
   networkReady = false;
   cleanupPeerOnly();
 
   try {
-    peer = new Peer(PUBLIC_ROOM_ID, {
+    peer = new Peer(roomId, {
       debug: 0,
-      reliable: true
+      reliable: true,
+      config: RTC_CONFIG
     });
   } catch(e){
     retryOnlineConnection('peer-create');
@@ -2842,7 +2900,8 @@ function startOnlineGame(isRetry=false){
     isHost = true;
     onlineAttempt=0;
     hideMpOverlay();
-    notify('👑 تو میزبان شدی — منتظر دوستت...');
+    notify('👑 اتاق ساخته شد — کد اتاق: ' + onlineRoomCode);
+    showRoomBanner('کد اتاق: ' + onlineRoomCode);
     // Peer ID گرفته شده؛ حالا دنیا را بساز تا بازیکن دوم بتواند بلافاصله وصل شود.
     startNewWorld('survival');
   });
@@ -2854,9 +2913,10 @@ function startOnlineGame(isRetry=false){
   peer.on('error', (err) => {
     console.warn('Peer error:', err?.type || err);
     if(err && err.type === 'unavailable-id'){
-      // یک میزبان از قبل وجود دارد؛ به عنوان مهمان وارد همان اتاق شو.
-      becomeGuest();
+      // یک میزبان با همین کد از قبل وجود دارد؛ به عنوان مهمان وارد همان اتاق شو.
+      becomeGuest(onlineRoomCode);
     } else if(err && (err.type === 'peer-unavailable' || err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed')){
+      showMpOverlay('🔄 مشکل در اتصال', 'دلیل: ' + (err.type || 'نامشخص') + ' — دوباره تلاش می‌کنیم');
       retryOnlineConnection(err.type);
     } else if(err && err.type === 'disconnected'){
       try { peer.reconnect(); } catch(e){ retryOnlineConnection(err.type); }
@@ -2866,13 +2926,15 @@ function startOnlineGame(isRetry=false){
   });
 }
 
-function becomeGuest(){
+function becomeGuest(code){
+  const targetCode = code || onlineRoomCode;
+  const roomId = roomPeerId(targetCode);
   isHost = false;
   networkReady = false;
   cleanupPeerOnly();
-  showMpOverlay('🎮 در حال ورود...', 'میزبان را پیدا می‌کنیم؛ لازم نیست کاری انجام بدهی');
+  showMpOverlay('🎮 در حال ورود به اتاق ' + targetCode + '...', 'در حال وصل شدن به دوستت؛ لازم نیست کاری انجام بدهی');
 
-  try { peer = new Peer({ debug: 0, reliable: true }); }
+  try { peer = new Peer({ debug: 0, reliable: true, config: RTC_CONFIG }); }
   catch(e){ retryOnlineConnection('guest-peer-create'); return; }
 
   let connected=false;
@@ -2883,7 +2945,7 @@ function becomeGuest(){
 
   peer.on('open', () => {
     let c=null;
-    try { c = peer.connect(PUBLIC_ROOM_ID, { reliable: true, serialization: 'json' }); }
+    try { c = peer.connect(roomId, { reliable: true, serialization: 'json' }); }
     catch(e){ finishCleanup(); retryOnlineConnection('connect-create'); return; }
     attachGuestConnection(c);
 
@@ -2891,12 +2953,13 @@ function becomeGuest(){
       if(!connected && !networkReady){
         finishCleanup();
         try { c.close(); } catch(e){}
+        showMpOverlay('❌ اتاقی با این کد پیدا نشد', 'مطمئن شو دوستت اول دکمه «ساخت اتاق جدید» را زده و کد را درست وارد کردی. در حال تلاش دوباره...');
         retryOnlineConnection('guest-timeout');
       }
-    }, 9000);
+    }, 15000);
 
     const oldOpen=c.on;
-    c.on('open',()=>{ connected=true; finishCleanup(); onlineAttempt=0; });
+    c.on('open',()=>{ connected=true; finishCleanup(); onlineAttempt=0; showRoomBanner('کد اتاق: ' + targetCode); });
     c.on('error',()=>{
       if(!networkReady){ finishCleanup(); retryOnlineConnection('connection-error'); }
     });
@@ -2905,6 +2968,7 @@ function becomeGuest(){
   peer.on('error', (err) => {
     console.warn('Guest peer error:', err?.type || err);
     if(err && (err.type === 'peer-unavailable' || err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed')){
+      showMpOverlay('🔄 مشکل در اتصال', 'دلیل: ' + (err.type || 'نامشخص') + ' — دوباره تلاش می‌کنیم');
       retryOnlineConnection(err.type);
     } else if(err && err.type === 'disconnected'){
       try { peer.reconnect(); } catch(e){ retryOnlineConnection(err.type); }
@@ -2914,7 +2978,40 @@ function becomeGuest(){
   });
 }
 
-document.getElementById('menu-online').addEventListener('click', startOnlineGame);
+function showRoomBanner(text){
+  const b = document.getElementById('mp-room-banner');
+  if(!b) return;
+  b.textContent = text;
+  b.classList.add('show');
+}
+function hideRoomBanner(){
+  const b = document.getElementById('mp-room-banner');
+  if(b) b.classList.remove('show');
+}
+
+const mpCodeOverlay = document.getElementById('mp-code-overlay');
+const mpCodeInput = document.getElementById('mp-code-input');
+
+document.getElementById('menu-online').addEventListener('click', () => {
+  mpCodeInput.value = '';
+  mpCodeOverlay.classList.add('open');
+});
+document.getElementById('mp-code-cancel').addEventListener('click', () => {
+  mpCodeOverlay.classList.remove('open');
+});
+document.getElementById('mp-create-room').addEventListener('click', () => {
+  mpCodeOverlay.classList.remove('open');
+  startOnlineGame(false, genRoomCode());
+});
+document.getElementById('mp-join-room').addEventListener('click', () => {
+  const code = (mpCodeInput.value || '').trim();
+  if(!code){ mpCodeInput.focus(); return; }
+  mpCodeOverlay.classList.remove('open');
+  startOnlineGame(false, code);
+});
+mpCodeInput.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') document.getElementById('mp-join-room').click();
+});
 
 // ═══════════════════════════════════════════════
 // ═══ شروع ═══
