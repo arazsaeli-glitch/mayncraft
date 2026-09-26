@@ -2854,5 +2854,62 @@ showMenu();
 renderHotbar();updateHealthBar();
 animate();
 </script>
+
+<script>
+/* IQNova/Minecraft Clone - friendlier multiplayer connection helper */
+(function(){
+  let retryTimer = null;
+  let retryCount = 0;
+
+  window.iqnovaOnlineRetry = function(){
+    retryCount++;
+    try {
+      if (typeof window.startOnlineGame === 'function') {
+        window.startOnlineGame();
+        return;
+      }
+      if (typeof window.initOnline === 'function') {
+        window.initOnline();
+        return;
+      }
+      // Fall back to clicking the existing online button if the game exposes it.
+      const b = document.getElementById('menu-online');
+      if (b) b.click();
+    } catch(e) {
+      console.warn('Online retry failed:', e);
+    }
+  };
+
+  window.iqnovaScheduleOnlineRetry = function(){
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(function(){
+      if (document.hidden) return;
+      try { window.iqnovaOnlineRetry(); } catch(e) {}
+    }, Math.min(2500 + retryCount * 1500, 8000));
+  };
+})();
+</script>
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  const overlay = document.getElementById('mp-status-overlay');
+  if (!overlay) return;
+
+  const close = document.getElementById('mp-close-btn');
+  if (close && !document.getElementById('mp-retry-btn')) {
+    const retry = document.createElement('button');
+    retry.id = 'mp-retry-btn';
+    retry.textContent = '🔄 تلاش دوباره برای ورود';
+    retry.style.cssText = 'padding:10px 22px;background:rgba(70,150,230,.75);border:1px solid rgba(150,210,255,.7);border-radius:6px;color:#fff;cursor:pointer;font-family:inherit;margin-top:4px;';
+    retry.onclick = function(){
+      overlay.classList.remove('open');
+      if (window.iqnovaOnlineRetry) window.iqnovaOnlineRetry();
+    };
+    close.parentNode.insertBefore(retry, close);
+  }
+});
+</script>
+
 </body>
 </html>
