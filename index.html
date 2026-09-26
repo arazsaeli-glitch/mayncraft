@@ -2454,6 +2454,17 @@ class RemotePlayer {
     const t = Math.min(1, dt*14);
     this.pos.lerp(this.targetPos, t);
 
+    // جلوگیری از قرار گرفتن مدل بازیکن مقابل داخل دوربین در لحظه اتصال
+    // (مختصات شبکه دست‌نخورده می‌ماند و فقط نمایش مدل اصلاح می‌شود).
+    const dxCam = this.pos.x - player.pos.x;
+    const dzCam = this.pos.z - player.pos.z;
+    const camDist = Math.hypot(dxCam, dzCam);
+    if(camDist < 0.75){
+      const ang = (this.id.split('').reduce((a,ch)=>a+ch.charCodeAt(0),0)%360) * Math.PI/180;
+      this.pos.x = player.pos.x + Math.cos(ang) * 0.9;
+      this.pos.z = player.pos.z + Math.sin(ang) * 0.9;
+    }
+
     let dy = this.targetYaw - this.yaw;
     while(dy >  Math.PI) dy -= Math.PI*2;
     while(dy < -Math.PI) dy += Math.PI*2;
@@ -2626,11 +2637,17 @@ function handleNetworkMessage(msg, fromConn){
       }
       loadedChunks.clear();
 
-      player.pos.set(0.5, SEA_LEVEL+20, 0.5);
+      // مهم: میزبان و مهمان نباید دقیقاً روی یک مختصات Spawn شوند؛
+      // در غیر این صورت مدل Steve بازیکن مقابل داخل دوربین قرار می‌گیرد
+      // و فقط Nameplate دیده می‌شود. مهمان کمی کنار نقطه Spawn قرار می‌گیرد.
+      const spawnX = isHost ? 0.5 : 3.5;
+      const spawnZ = isHost ? 0.5 : 0.5;
+      player.pos.set(spawnX, SEA_LEVEL+20, spawnZ);
       player.vel.set(0,0,0);
       getChunkData(0, 0);
       let y = WORLD_HEIGHT - 1;
-      while(y > 0 && getBlockWorld(0, y, 0) === AIR) y--;
+      const sx = Math.floor(spawnX), sz = Math.floor(spawnZ);
+      while(y > 0 && getBlockWorld(sx, y, sz) === AIR) y--;
       player.pos.y = y + 2;
       player.health = player.maxHealth;
       player.dead = false;
