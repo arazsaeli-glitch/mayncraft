@@ -2785,21 +2785,65 @@ function explodeAtLocal(pos, radius, damage){
   if(pd<radius+2){const dmg=Math.round(damage*(1-pd/(radius+2)));if(dmg>0)damagePlayer(dmg);}
 }
 
-function startOnlineGame(){
-  showMpOverlay('🌐 در حال اتصال...', 'داریم می‌بینیم که میزبانی هست یا نه');
+let onlineAttempt = 0;
+let onlineRetryTimer = null;
+let onlineWatchdog = null;
+
+function cleanupPeerOnly(){
+  if(onlineRetryTimer) { clearTimeout(onlineRetryTimer); onlineRetryTimer=null; }
+  if(onlineWatchdog) { clearTimeout(onlineWatchdog); onlineWatchdog=null; }
+  try { if(peer && !peer.destroyed) peer.destroy(); } catch(e){}
+  peer = null;
+}
+
+function retryOnlineConnection(reason=''){
+  if(onlineRetryTimer) return;
+  onlineAttempt++;
+  const delay = Math.min(900 + onlineAttempt * 700, 3500);
+  showMpOverlay('🔄 در حال تلاش دوباره...', `اتصال برقرار نشد؛ ${Math.ceil(delay/1000)} ثانیه دیگر دوباره امتحان می‌کنیم`);
+  cleanupPeerOnly();
+  onlineRetryTimer = setTimeout(()=>{
+    onlineRetryTimer=null;
+    startOnlineGame(true);
+  }, delay);
+}
+
+function armOnlineWatchdog(){
+  if(onlineWatchdog) clearTimeout(onlineWatchdog);
+  onlineWatchdog=setTimeout(()=>{
+    onlineWatchdog=null;
+    if(!networkReady && document.body.classList.contains('playing')===false){
+      retryOnlineConnection('timeout');
+    }
+  }, 12000);
+}
+
+function startOnlineGame(isRetry=false){
+  if(!isRetry) onlineAttempt=0;
+  showMpOverlay('🌐 در حال ورود به بازی آنلاین...', 'لطفاً چند لحظه صبر کن؛ اتصال خودکار انجام می‌شود');
   isHost = false;
+  networkReady = false;
+  cleanupPeerOnly();
 
   try {
-    peer = new Peer(PUBLIC_ROOM_ID, { debug: 0 });
+    peer = new Peer(PUBLIC_ROOM_ID, {
+      debug: 0,
+      reliable: true
+    });
   } catch(e){
-    showMpOverlay('❌ خطا', 'مرورگر از WebRTC پشتیبانی نمی‌کند');
+    retryOnlineConnection('peer-create');
     return;
   }
 
+  armOnlineWatchdog();
+
   peer.on('open', (id) => {
+    if(onlineWatchdog) { clearTimeout(onlineWatchdog); onlineWatchdog=null; }
     isHost = true;
+    onlineAttempt=0;
     hideMpOverlay();
     notify('👑 تو میزبان شدی — منتظر دوستت...');
+    // Peer ID گرفته شده؛ حالا دنیا را بساز تا بازیکن دوم بتواند بلافاصله وصل شود.
     startNewWorld('survival');
   });
 
@@ -2808,36 +2852,64 @@ function startOnlineGame(){
   });
 
   peer.on('error', (err) => {
-    if(err.type === 'unavailable-id'){
-      try { peer.destroy(); } catch(e){}
+    console.warn('Peer error:', err?.type || err);
+    if(err && err.type === 'unavailable-id'){
+      // یک میزبان از قبل وجود دارد؛ به عنوان مهمان وارد همان اتاق شو.
       becomeGuest();
-    } else if(err.type === 'peer-unavailable'){
-      showMpOverlay('❌ میزبان پیدا نشد', 'دوباره تلاش کن');
-      setTimeout(hideMpOverlay, 2500);
+    } else if(err && (err.type === 'peer-unavailable' || err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed')){
+      retryOnlineConnection(err.type);
+    } else if(err && err.type === 'disconnected'){
+      try { peer.reconnect(); } catch(e){ retryOnlineConnection(err.type); }
     } else {
-      console.warn('Peer error:', err);
+      retryOnlineConnection(err?.type || 'unknown');
     }
   });
 }
 
 function becomeGuest(){
   isHost = false;
-  showMpOverlay('🎮 در حال ورود...', 'در حال اتصال به دنیای میزبان');
-  try { peer = new Peer({ debug: 0 }); }
-  catch(e){ showMpOverlay('❌ خطا', 'مرحله اتصال شکست خورد'); return; }
+  networkReady = false;
+  cleanupPeerOnly();
+  showMpOverlay('🎮 در حال ورود...', 'میزبان را پیدا می‌کنیم؛ لازم نیست کاری انجام بدهی');
+
+  try { peer = new Peer({ debug: 0, reliable: true }); }
+  catch(e){ retryOnlineConnection('guest-peer-create'); return; }
+
+  let connected=false;
+  let guestTimeout=null;
+  const finishCleanup=()=>{
+    if(guestTimeout){ clearTimeout(guestTimeout); guestTimeout=null; }
+  };
 
   peer.on('open', () => {
-    const c = peer.connect(PUBLIC_ROOM_ID, { reliable: true });
+    let c=null;
+    try { c = peer.connect(PUBLIC_ROOM_ID, { reliable: true, serialization: 'json' }); }
+    catch(e){ finishCleanup(); retryOnlineConnection('connect-create'); return; }
     attachGuestConnection(c);
+
+    guestTimeout=setTimeout(()=>{
+      if(!connected && !networkReady){
+        finishCleanup();
+        try { c.close(); } catch(e){}
+        retryOnlineConnection('guest-timeout');
+      }
+    }, 9000);
+
+    const oldOpen=c.on;
+    c.on('open',()=>{ connected=true; finishCleanup(); onlineAttempt=0; });
+    c.on('error',()=>{
+      if(!networkReady){ finishCleanup(); retryOnlineConnection('connection-error'); }
+    });
   });
 
   peer.on('error', (err) => {
-    if(err.type === 'peer-unavailable'){
-      showMpOverlay('🔄 در حال تلاش مجدد...', 'میزبان پاسخ نداد، دوباره امتحان می‌کنیم');
-      try { peer.destroy(); } catch(e){}
-      setTimeout(startOnlineGame, 1500);
+    console.warn('Guest peer error:', err?.type || err);
+    if(err && (err.type === 'peer-unavailable' || err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed')){
+      retryOnlineConnection(err.type);
+    } else if(err && err.type === 'disconnected'){
+      try { peer.reconnect(); } catch(e){ retryOnlineConnection(err.type); }
     } else {
-      console.warn('Peer error:', err);
+      retryOnlineConnection(err?.type || 'guest-unknown');
     }
   });
 }
